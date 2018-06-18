@@ -454,11 +454,12 @@ class ComponentForm(forms.Form):
         error_messages = {'required': 'component type is required.'},
         widget=forms.HiddenInput()
     )
-
     def clean(self):
         super(ComponentForm, self).clean()
         file_types = {
-            'video': 'video/ogg',
+            'video': 'video/mp4',
+            'audio': ['audio/ogg', 'video/ogg'],
+            'temp' : ['audio/ogg', 'video/ogg'],
             'slide': ['application/zip', 'application/x-zip-compressed'],
             'code': ['application/zip', 'application/x-zip-compressed'],
             'assignment': ['text/plain', 'application/pdf'],
@@ -504,6 +505,12 @@ class ComponentForm(forms.Form):
             )
             self.fields['isarchive'] = forms.ChoiceField(
                 choices = [(0, 'Replace old video'), (1, 'Archive old video as Correction'), (2, 'Archive old video as Version')],
+                widget=forms.Select(),
+                required = False,
+            )
+        elif comptype == 'audio':
+            self.fields['isarchive'] = forms.ChoiceField(
+                choices = [(0, 'Replace old audio'), (1, 'Archive old audio as Correction'), (2, 'Archive old audio as Version')],
                 widget=forms.Select(),
                 required = False,
             )

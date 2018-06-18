@@ -50,6 +50,7 @@ def get_page(resource, page, page_count = 20):
         resource = paginator.page(paginator.num_pages)
     return resource
 
+
 def is_contributor(user):
     """Check if the user is having contributor rights"""
     if user.groups.filter(Q(name='Contributor')|Q(name='External-Contributor')).count():
@@ -102,9 +103,52 @@ def get_filesize(path):
     filesize_bytes = os.path.getsize(path)
     return humansize(filesize_bytes)
 
-# returns video meta info using ffmpeg
+
+def get_audio_info(path):
+    """
+    Uses FFmpeg to determine information about an audio file.
+    Information displayed on admin_review page is generated from here.
+    """
+    info_m = {}
+    try:
+        process = subprocess.Popen(['/usr/bin/ffmpeg', '-i', path], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        stdout, stderr = process.communicate()
+        duration_m = re.search(r"Duration:\s{1}(?P<hours>\d+?):(?P<minutes>\d+?):(?P<seconds>\d+\.\d+?)", stdout, re.DOTALL).groupdict()
+        info_m = re.search(r": Audio: (?P<codec>.*?), (?P<profile>.*?)", stdout, re.DOTALL).groupdict()
+        
+        hours = Decimal(duration_m['hours'])
+        minutes = Decimal(duration_m['minutes'])
+        seconds = Decimal(duration_m['seconds'])
+
+        total = 0
+        total += 60 * 60 * hours
+        total += 60 * minutes
+        total += seconds
+
+        info_m['hours'] = hours
+        info_m['minutes'] = minutes
+        info_m['seconds'] = seconds
+        tmp_seconds = str(int(seconds))
+        if seconds < 10:
+            tmp_seconds = "0" + tmp_seconds
+        info_m['duration'] = duration_m['hours'] + ':' + duration_m['minutes'] + ":" + tmp_seconds
+        info_m['total'] = int(total)
+        info_m['size'] = get_filesize(path)
+    except:
+        info_m['hours'] = 0
+        info_m['minutes'] = 0
+        info_m['seconds'] = 0
+        info_m['duration'] = 0
+        info_m['total'] = 0
+        info_m['size'] = 0
+    return info_m
+
+
 def get_video_info(path):
-    """Uses ffmpeg to determine information about a video."""
+    """
+    Uses ffmpeg to determine information about a video.
+    Information displayed on admin_review page is generated from here.
+    """
     info_m = {}
     try:
         process = subprocess.Popen(['/usr/bin/ffmpeg', '-i', path], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
@@ -145,7 +189,9 @@ def get_video_info(path):
         info_m['height'] = 0
         info_m['size'] = 0
     return info_m
-#create_thumbnail(tr_rec, 'Big', tr_rec.video_thumbnail_time, '700:500')
+
+
+#create_thumbnail(tr_rec, 'Big', tr_rec.audio_thumbnail_time, '700:500')
 def create_thumbnail(row, attach_str, thumb_time, thumb_size):
     filepath = settings.MEDIA_ROOT + 'videos/' + str(row.tutorial_detail.foss_id) + '/' + str(row.tutorial_detail_id) + '/'
     filename = row.tutorial_detail.tutorial.replace(' ', '-') + '-' + attach_str + '.png'
@@ -159,6 +205,7 @@ def create_thumbnail(row, attach_str, thumb_time, thumb_size):
     except Exception, e:
         print 1, e
         pass
+
 
 def add_qualityreviewer_notification(tr_rec, comp_title, message):
     dr_roles = QualityReviewerRole.objects.filter(foss_category = tr_rec.tutorial_detail.foss, language = tr_rec.language, status = 1)
@@ -392,6 +439,7 @@ def upload_index(request):
                 tutorial_resource.outline_user = request.user
                 tutorial_resource.script_user = request.user
                 tutorial_resource.video_user = request.user
+                tutorial_resource.audio = "Unavailable"
                 tutorial_resource.save()
 
             return HttpResponseRedirect('/creation/upload/tutorial/' + str(tutorial_resource.id) + '/')
@@ -556,6 +604,10 @@ def upload_tutorial(request, trid):
     except Exception, e:
         print e
         raise PermissionDenied()
+    file_path = settings.MEDIA_ROOT + 'videos/' + str(tr_rec.tutorial_detail.foss_id) + '/' + str(tr_rec.tutorial_detail.id) + '/' + tr_rec.audio
+    if os.path.isfile(file_path) == False:
+        tr_rec.audio = "Unavailable"
+        tr_rec.save()
     context = {
         'tr': tr_rec,
         'contrib_log': contrib_log,
@@ -727,7 +779,7 @@ def save_timed_script(request, tdid):
                 if(int(code) == 200):
                     tr_rec.timed_script = storage_path
                     tr_rec.save()
-                    srt_file_path = settings.MEDIA_ROOT + 'videos/' + str(tr_rec.tutorial_detail.foss_id) + '/' + str(tr_rec.tutorial_detail_id) + '/' + tr_rec.tutorial_detail.tutorial.replace(' ', '-') + '-English.srt'
+                    srt_file_path = settings.MEDIA_ROOT + 'videos/' + str(tr_rec.tutorial_detail.foss_id) + '/' + str(tr_rec.tutorial_detail_id) + '/' + tr_rec.tutorial_detail.tutorial.replace(' ', '-') + '-English.vtt'
                     minified_script_url = settings.SCRIPT_URL.strip('/') + '?title=' + quote(storage_path) + '&printable=yes'
                     if generate_subtitle(minified_script_url, srt_file_path):
                         messages.success(request, 'Timed script updated and subtitle file generated successfully!')
@@ -756,6 +808,7 @@ def ajax_upload_timed_script(request):
         for row in rows:
             data += '<option value="' + str(row.id) + '">' + row.tutorial + '</option>'
     return HttpResponse(json.dumps(data), content_type='application/json')
+
 
 @login_required
 def upload_prerequisite(request, trid):
@@ -857,6 +910,7 @@ def upload_keywords(request, trid):
     context.update(csrf(request))
     return render(request, 'creation/templates/upload_keywords.html', context)
 
+
 @login_required
 def upload_component(request, trid, component):
     tr_rec = None
@@ -864,9 +918,11 @@ def upload_component(request, trid, component):
         tr_rec = TutorialResource.objects.get(pk = trid, status = 0)
         ContributorRole.objects.get(user_id = request.user.id, foss_category_id = tr_rec.tutorial_detail.foss_id, language_id = tr_rec.language_id, status = 1)
         comp_title = tr_rec.tutorial_detail.foss.foss + ': ' + tr_rec.tutorial_detail.tutorial + ' - ' + tr_rec.language.name
+        contrib_log = ContributorLog.objects.filter(tutorial_resource_id = tr_rec.id).order_by('-created')
+        review_log = NeedImprovementLog.objects.filter(tutorial_resource_id = tr_rec.id).order_by('-created')
     except Exception, e:
         raise PermissionDenied()
-    if component == 'video' and getattr(tr_rec, component + '_status') == 4:
+    if (component == 'video' or component == 'audio') and getattr(tr_rec, 'video' + '_status') == 4:
         raise PermissionDenied()
     elif (component == 'slide' or component == 'code' or component == 'assignment') and getattr(tr_rec.common_content, component + '_status') == 4:
         raise PermissionDenied()
@@ -874,6 +930,7 @@ def upload_component(request, trid, component):
         if request.method == 'POST':
             response_msg = ''
             error_msg = ''
+	    
             form = ComponentForm(component, request.POST, request.FILES)
             if form.is_valid():
                 try:
@@ -881,9 +938,33 @@ def upload_component(request, trid, component):
                     comp_log.user = request.user
                     comp_log.tutorial_resource = tr_rec
                     comp_log.component = component
-                    if component == 'video':
+                    if component == "audio":
                         file_name, file_extension = os.path.splitext(request.FILES['comp'].name)
                         file_name =  tr_rec.tutorial_detail.tutorial.replace(' ', '-') + '-' + tr_rec.language.name + file_extension
+                        file_path = settings.MEDIA_ROOT + 'temp/'
+                        t = subprocess.Popen(["mkdir","-p",file_path])
+                        full_path = file_path + file_name
+                        if os.path.isfile(full_path):
+                            p=subprocess.Popen(["rm","-rf",full_path,full_path[:-4]+"-nonoise.ogg"])
+                            while p.poll() == None:
+                                pass
+                        fout = open(full_path, 'wb+')
+                        f = request.FILES['comp']
+                        for chunk in f.chunks():
+                            fout.write(chunk)
+                        fout.close()
+                        tr_rec.audio = file_name
+                        tr_rec.video = tr_rec.tutorial_detail.tutorial.replace(' ', '-') + '-Video' + '.webm'
+                        tr_rec.video_user = request.user
+                        tr_rec.video_status = 0
+                        if not tr_rec.version:
+                            tr_rec.version = 1
+                        tr_rec.save()
+                        subprocess.Popen(["python",settings.BASE_DIR+"/creation/sox.py",full_path])	
+                        response_msg = component+' uploaded successfully!'
+                    elif component == 'video':
+                        file_name, file_extension = os.path.splitext(request.FILES['comp'].name)
+                        file_name = tr_rec.tutorial_detail.tutorial.replace(' ', '-') + '-Video' + file_extension
                         file_path = settings.MEDIA_ROOT + 'videos/' + str(tr_rec.tutorial_detail.foss_id) + '/' + str(tr_rec.tutorial_detail.id) + '/'
                         full_path = file_path + file_name
                         if os.path.isfile(file_path + tr_rec.video) and tr_rec.video_status > 0:
@@ -899,28 +980,36 @@ def upload_component(request, trid, component):
                         for chunk in f.chunks():
                             fout.write(chunk)
                         fout.close()
+                        if os.path.isfile(full_path[0:-4]+".webm"):
+                           subprocess.Popen(["rm",full_path[0:-4]+".webm"])
+                        subprocess.Popen(["/usr/bin/ffmpeg","-y","-i",full_path,"-vcodec","libvpx","-af","volume=0.0","-max_muxing_queue_size","1024","-f","webm",full_path[:-4]+".webm"],stdout=subprocess.PIPE)
+                        # subprocess.Popen(["ffmpeg","-i",full_path,"-an",full_path[:-4]+".webm"])
+                        if os.path.isfile(full_path[:-9]+tr_rec.language.name+".ogg"):
+                            subprocess.Popen(["rm",full_path[:-9]+tr_rec.language.name+".ogg"])
+                        subprocess.Popen(["/usr/bin/ffmpeg","-y","-i",full_path,"-vn","-acodec","libvorbis",full_path[:-9]+tr_rec.language.name+".ogg"])
+                        # subprocess.Popen(["ffmpeg","-i",full_path,"-vn",full_path[:-9]+tr_rec.language.name+".ogg"])
                         comp_log.status = tr_rec.video_status
-                        tr_rec.video = file_name
+                        tr_rec.video = file_name[:-4]+".webm"
+                        tr_rec.audio = tr_rec.tutorial_detail.tutorial.replace(' ', '-') + '-' + 'English' + '.ogg'
                         tr_rec.video_user = request.user
                         tr_rec.video_status = 1
                         if not tr_rec.version:
                             tr_rec.version = 1
                         tr_rec.video_thumbnail_time = '00:' + request.POST.get('thumb_mins', '00') + ':' + request.POST.get('thumb_secs', '00')
-                        tr_rec.save()
-                        if tr_rec.language.name == 'English':
-                            create_thumbnail(tr_rec, 'Big', tr_rec.video_thumbnail_time, '700:500')
-                            create_thumbnail(tr_rec, 'Small', tr_rec.video_thumbnail_time, '170:127')
+    	                tr_rec.save()
+    	                if tr_rec.language.name == 'English':
+    	                    create_thumbnail(tr_rec, 'Big', tr_rec.video_thumbnail_time, '700:500')
+                            create_thumbnail(tr_rec, 'Small', tr_rec.video_thumbnail_time,'170:127')
                         comp_log.save()
-                        comp_title = tr_rec.tutorial_detail.foss.foss + ': ' + tr_rec.tutorial_detail.tutorial + ' - ' + tr_rec.language.name
-                        add_adminreviewer_notification(tr_rec, comp_title, 'Video waiting for admin review')
-                        response_msg = 'Video uploaded successfully!'
+    	                comp_title = tr_rec.tutorial_detail.foss.foss + ': ' + tr_rec.tutorial_detail.tutorial + ' - ' + tr_rec.language.name
+                        add_adminreviewer_notification(tr_rec, comp_title, component+' waiting for admin review')
+                        response_msg = component+' uploaded successfully!'
                     elif component == 'slide':
                         file_name, file_extension = os.path.splitext(request.FILES['comp'].name)
                         file_name =  tr_rec.tutorial_detail.tutorial.replace(' ', '-') + '-Slides' + file_extension
                         file_path = settings.MEDIA_ROOT + 'videos/' + str(tr_rec.tutorial_detail.foss_id) + '/' + str(tr_rec.tutorial_detail.id) + '/resources/' + file_name
                         fout = open(file_path, 'wb+')
                         f = request.FILES['comp']
-                        # Iterate through the chunks.
                         for chunk in f.chunks():
                             fout.write(chunk)
                         fout.close()
@@ -1011,7 +1100,6 @@ def upload_component(request, trid, component):
                 }
                 context.update(csrf(request))
                 return render(request, 'creation/templates/upload_component.html', context)
-
     form = ComponentForm(component)
     context = {
         'form': form,
@@ -1044,6 +1132,35 @@ def mark_notrequired(request, trid, tcid, component):
         messages.error(request, 'Something went wrong, please try after some time.')
     return HttpResponseRedirect(request.META['HTTP_REFERER'])
 
+
+def preview_check_avaiable(request, trid, component):
+    '''
+    When Audio / Video is uploaded, the frontend needs to check if 
+    the preview is ready, this function is called by the `upload_component`
+    and a response of `done` and `not-done` is send accordingly.
+    '''
+    tr_rec = None
+    try:
+        tr_rec = TutorialResource.objects.get(pk = trid)
+    except Exception, e:
+        print e
+        raise PermissionDenied()
+    if component == 'video':
+        video_path = settings.MEDIA_ROOT + "videos/" + str(tr_rec.tutorial_detail.foss_id) + "/" + str(tr_rec.tutorial_detail_id) + "/" + tr_rec.video
+        audio_path = settings.MEDIA_ROOT + "videos/" + str(tr_rec.tutorial_detail.foss_id) + "/" + str(tr_rec.tutorial_detail_id) + "/" + tr_rec.audio
+        video_info = get_video_info(video_path)
+        audio_info = get_audio_info(audio_path)
+        if video_info['duration'] != 0 and video_info['size'] != 0 and audio_info['duration'] != 0 and audio_info['size'] != 0:
+            return HttpResponse("done") 
+        return HttpResponse("not-done")
+    if component == 'audio':
+        audio_path = settings.MEDIA_ROOT + "temp/" + tr_rec.video[:-10]+tr_rec.language.name+"-nonoise.ogg"
+        audio_info = get_audio_info(audio_path)
+        if audio_info['duration'] != 0 and audio_info['size'] != 0:
+            return HttpResponse("done") 
+        return HttpResponse("not-done")
+
+
 def view_component(request, trid, component):
     tr_rec = None
     context = {}
@@ -1062,14 +1179,99 @@ def view_component(request, trid, component):
             'component': component,
             'component_data': tr_rec.common_content.keyword
         }
-    elif component == 'video':
+    elif component == 'video' or component == 'audio':
+        video_path = settings.MEDIA_ROOT + "videos/" + str(tr_rec.tutorial_detail.foss_id) + "/" + str(tr_rec.tutorial_detail_id) + "/" + tr_rec.video
+        audio_path = settings.MEDIA_ROOT + "videos/" + str(tr_rec.tutorial_detail.foss_id) + "/" + str(tr_rec.tutorial_detail_id) + "/" + tr_rec.audio
+        eng_audio_path = False
+        if tr_rec.language.name != "English":
+            # If audio is not english `eng_audio_path` will 
+            # keep information of the english audio file for 
+            # comparision with the audio file of the other language.
+            eng_audio_path = settings.MEDIA_ROOT + "videos/" + str(tr_rec.tutorial_detail.foss_id) + "/" + str(tr_rec.tutorial_detail_id) + "/" + tr_rec.audio.rsplit(tr_rec.language.name)[0] + "English.ogg"
+        video_info = get_video_info(video_path)
+        audio_info = get_audio_info(audio_path)
+        eng_audio_info = get_audio_info(eng_audio_path) 
         video_path = settings.MEDIA_ROOT + "videos/" + str(tr_rec.tutorial_detail.foss_id) + "/" + str(tr_rec.tutorial_detail_id) + "/" + tr_rec.video
         video_info = get_video_info(video_path)
+        aud_present = 1
+        if os.path.isfile(audio_path) == False:
+            aud_present = 0
+            messages.error(request,"No File Present")
         context = {
             'tr': tr_rec,
+	        'video_mod':tr_rec.video[:-4].replace("-","_")+"_nonoise",
+	        'original': tr_rec.video[:-4].replace("-","_"),
             'component': component,
             'video_info': video_info,
-            'media_url': settings.MEDIA_URL
+            'eng_audio_info': eng_audio_info,
+            'audio_info': audio_info,
+            'media_url': settings.MEDIA_URL,
+            'aud_present': aud_present
+        }
+    else:
+        messages.error(request, 'Invalid component passed as argument!')
+        return HttpResponseRedirect(request.META['HTTP_REFERER'])
+    return render(request, 'creation/templates/view_component.html', context)
+
+
+def view_component_audtype(request, trid, component, aud_type):
+    tr_rec = None
+    context = {}
+    try:
+        tr_rec = TutorialResource.objects.get(pk = trid)
+    except Exception, e:
+        print e
+        raise PermissionDenied()
+    if component == 'outline':
+        context = {
+            'component': component,
+            'component_data': tr_rec.outline
+        }
+    elif component == 'keyword':
+        context = {
+            'component': component,
+            'component_data': tr_rec.common_content.keyword
+        }
+    elif component == 'video' or component == 'audio':
+        video_path = settings.MEDIA_ROOT + "videos/" + str(tr_rec.tutorial_detail.foss_id) + "/" + str(tr_rec.tutorial_detail_id) + "/" + tr_rec.video
+        
+        if aud_type == 'o':
+            audio_path = settings.MEDIA_ROOT + "temp/" + tr_rec.audio
+        elif aud_type == 'f':
+            audio_path = settings.MEDIA_ROOT + "temp/" + tr_rec.audio[:-4] + "-nonoise.ogg"
+        else:
+            print "test"
+            file_name =  aud_type.replace('_', '-') +".ogg"
+            file_path_src = settings.MEDIA_ROOT + 'temp/'
+            full_path_src = file_path_src + file_name
+            file_path_dest = settings.MEDIA_ROOT + 'videos/' + str(tr_rec.tutorial_detail.foss_id) + '/' + str(tr_rec.tutorial_detail.id) + '/'
+            if "nonoise" in file_name:
+                file_name = file_name[:-12] + ".ogg"
+            full_path_dest = file_path_dest + file_name
+            subprocess.Popen(["mv",full_path_src,full_path_dest])
+            tr_rec.video_status = 1
+            tr_rec.audio = file_name
+            tr_rec.save()
+            messages.success(request, "Your submission has been accepted")
+            audio_path = settings.MEDIA_ROOT + "videos/" + str(tr_rec.tutorial_detail.foss_id) + "/" + str(tr_rec.tutorial_detail_id) + "/" + tr_rec.audio
+        eng_audio_path = False
+        if tr_rec.language.name != "English":
+            eng_audio_path = settings.MEDIA_ROOT + "videos/" + str(tr_rec.tutorial_detail.foss_id) + "/" + str(tr_rec.tutorial_detail_id) + "/" + tr_rec.audio.rsplit(tr_rec.language.name)[0] + "English.ogg"
+        video_info = get_video_info(video_path)
+        audio_info = get_audio_info(audio_path)
+        eng_audio_info = get_audio_info(eng_audio_path)
+        context = {
+            'tr': tr_rec,
+            'audio_modified':tr_rec.video[:-10].replace("-","_")+tr_rec.language.name+"_nonoise",
+            'audio_original':tr_rec.video[:-10].replace("-","_")+tr_rec.language.name,
+            'filtered': tr_rec.video[:-10]+tr_rec.language.name+ "-nonoise", 
+            'component': component,
+            'video_info': video_info,
+            'audio_info': audio_info,
+            'media_url': settings.MEDIA_URL,
+            'eng_audio_info': eng_audio_info,
+            'original': tr_rec.video[:-10]+tr_rec.language.name,
+            'aud_type':aud_type,
         }
     else:
         messages.error(request, 'Invalid component passed as argument!')
@@ -1235,7 +1437,8 @@ def admin_review_video(request, trid):
                     add_contributor_notification(tr, tut_title, 'Video accepted by Admin reviewer')
                     add_domainreviewer_notification(tr, tut_title, 'Video waiting for Domain review')
                     response_msg = 'Review status updated successfully!'
-                except Exception, e:
+                except Exception as error:
+                    print error
                     error_msg = 'Something went wrong, please try again later.'
             elif request.POST['video_status'] == '5':
                 try:
@@ -1246,14 +1449,21 @@ def admin_review_video(request, trid):
                     AdminReviewLog.objects.create(status = tr.video_status, user = request.user, tutorial_resource = tr)
                     add_contributor_notification(tr, tut_title, 'Video is under Need Improvement state')
                     response_msg = 'Review status updated successfully!'
-                except Exception, e:
+                except Exception as error:
+                    print error
                     error_msg = 'Something went wrong, please try again later.'
             else:
                 error_msg = 'Invalid status code!'
     else:
         form = ReviewVideoForm()
     video_path = settings.MEDIA_ROOT + "videos/" + str(tr.tutorial_detail.foss_id) + "/" + str(tr.tutorial_detail_id) + "/" + tr.video
+    audio_path = settings.MEDIA_ROOT + "videos/" + str(tr.tutorial_detail.foss_id) + "/" + str(tr.tutorial_detail_id) + "/" + tr.audio
+    eng_audio_path = False
+    if tr.language.name != "English":
+        eng_audio_path = settings.MEDIA_ROOT + "videos/" + str(tr.tutorial_detail.foss_id) + "/" + str(tr.tutorial_detail_id) + "/" + tr.audio.rsplit(tr.language.name)[0] + "English.ogg"
     video_info = get_video_info(video_path)
+    audio_info = get_audio_info(audio_path)
+    eng_audio_info = get_audio_info(eng_audio_path)
     if error_msg:
         messages.error(request, error_msg)
     if response_msg:
@@ -1263,6 +1473,8 @@ def admin_review_video(request, trid):
         'form': form,
         'media_url': settings.MEDIA_URL,
         'video_info': video_info,
+        'audio_info': audio_info,
+        'eng_audio_info': eng_audio_info,
     }
     context.update(csrf(request))
     return render(request, 'creation/templates/admin_review_video.html', context)
@@ -2209,7 +2421,7 @@ def creation_view_tutorial(request, foss, tutorial, lang):
         td_rec = TutorialDetail.objects.get(foss = FossCategory.objects.get(foss = foss), tutorial = tutorial)
         tr_rec = TutorialResource.objects.get(tutorial_detail = td_rec, language = Language.objects.get(name = lang))
         tr_recs = TutorialResource.objects.filter(tutorial_detail__in = TutorialDetail.objects.filter(foss = tr_rec.tutorial_detail.foss).order_by('order').values_list('id'), language = tr_rec.language)
-    except Exception, e:
+    except Exception as e:
         messages.error(request, str(e))
         return HttpResponseRedirect('/')
     video_path = settings.MEDIA_ROOT + "videos/" + str(tr_rec.tutorial_detail.foss_id) + "/" + str(tr_rec.tutorial_detail_id) + "/" + tr_rec.video
@@ -2222,7 +2434,7 @@ def creation_view_tutorial(request, foss, tutorial, lang):
         'media_url': settings.MEDIA_URL,
         'media_path': settings.MEDIA_ROOT,
         'tutorial_path': str(tr_rec.tutorial_detail.foss_id) + '/' + str(tr_rec.tutorial_detail_id) + '/',
-        'script_base': settings.SCRIPT_URL
+        'script_base': settings.SCRIPT_URL,
     }
     return render(request, 'creation/templates/creation_view_tutorial.html', context)
 
